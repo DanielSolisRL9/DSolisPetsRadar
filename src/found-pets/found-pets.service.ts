@@ -6,20 +6,42 @@ import { Repository } from 'typeorm';
 import { EmailService } from 'src/email/email.service';
 import { generateFoundPetEmailTemplate } from 'src/found-pets/templates/foundPet.template';
 import { FoundPetDto } from 'src/core/interfaces/foundPets.interface';
+import { CacheService } from 'src/cache/cache.service';
+import { logger } from 'src/config/logger';
+
+const CACHE_KEY_FOUND_PETS = 'found-pets:all';
 
 @Injectable()
 export class FoundPetsService {
-
   constructor(
     @InjectRepository(FoundPet)
     private readonly foundPetRepository: Repository<FoundPet>,
     @InjectRepository(LostPet)
     private readonly lostPetRepository: Repository<LostPet>,
-    private readonly emailService: EmailService
+    private readonly emailService: EmailService,
+    private readonly cacheService: CacheService,
   ) {}
 
-  async createFoundPet(foundPet: FoundPetDto) {
+  async getFoundPets(): Promise<FoundPet[]> {
+    try {
+      logger.info('[FoundPetsService] Consultando found-pets en cache...');
+      const cached = await this.cacheService.get<FoundPet[]>(CACHE_KEY_FOUND_PETS);
+      if (cached && cached.length > 0) {
+        logger.info('[FoundPetsService] Found-pets desde cache');
+        return cached;
+      }
+      logger.info('[FoundPetsService] Trayendo found-pets de la DB...');
+      const pets = await this.foundPetRepository.find();
+      await this.cacheService.set(CACHE_KEY_FOUND_PETS, pets);
+      logger.info(`[FoundPetsService] ${pets.length} mascotas encontradas obtenidas`);
+      return pets;
+    } catch (error) {
+      console.error('[FoundPetsService] Error:', error);
+      return [];
+    }
+  }
 
+  async createFoundPet(foundPet: FoundPetDto) {
     const newFoundPet = this.foundPetRepository.create({
       ...foundPet,
       location: {
@@ -28,6 +50,7 @@ export class FoundPetsService {
       },
     });
     await this.foundPetRepository.save(newFoundPet);
+    await this.cacheService.delete(CACHE_KEY_FOUND_PETS);
 
     const lostPets = await this.lostPetRepository
       .createQueryBuilder('lost')
@@ -38,13 +61,10 @@ export class FoundPetsService {
           ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography,
           500
         )
-      `, {
-        lon: foundPet.lon,
-        lat: foundPet.lat
-      })
+      `, { lon: foundPet.lon, lat: foundPet.lat })
       .getMany();
 
-    console.log(`${lostPets.length} mascotas encontradas en radio`);
+    logger.info(`[FoundPetsService] ${lostPets.length} mascotas perdidas en radio de 500m`);
 
     for (const pet of lostPets) {
       const html = generateFoundPetEmailTemplate(foundPet, {
@@ -61,13 +81,13 @@ export class FoundPetsService {
         lat: (pet.location as any).coordinates[1],
         lon: (pet.location as any).coordinates[0],
         address: pet.address,
-        lost_date: pet.lost_date
+        lost_date: pet.lost_date,
       });
 
       await this.emailService.sendEmail({
         to: pet.owner_email,
         subject: 'Posible coincidencia con tu mascota perdida',
-        html: html
+        html,
       });
     }
 

@@ -1,10 +1,15 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { LostPetsService } from './lost-pets.service';
 
 @Controller('lost-pets')
 export class LostPetsController {
 
   constructor(private readonly lostPetsService: LostPetsService) {}
+
+  @Get()
+  async getLostPets() {
+    return await this.lostPetsService.getLostPets();
+  }
 
   @Post()
   async createLostPet(@Body() body: any) {
